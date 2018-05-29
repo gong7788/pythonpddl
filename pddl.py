@@ -145,7 +145,7 @@ class Formula:
         elif self.op == "or":
             return "(or {} {})".format(self.subformulas[0].asPDDL(), self.subformulas[1].asPDDL())
         elif self.op == "forall":
-            return "(forall ({}) {})".format(" ".join(self.variables), self.subformulas[0].asPDDL())
+            return "(forall ({}) {})".format(" ".join([arg.arg_name for arg in self.variables.args]), self.subformulas[0].asPDDL())
         else:
             raise Exception("Don't know how to handle op " + self.op)
 
@@ -180,7 +180,11 @@ def parseGoalDescription(gd, is_effect=False):
         if op == "forall":
             variables = []
             for i in range(gd.typedVariableList().getChildCount()):
-                variables.append(gd.typedVariableList().getChild(i).getText())
+                variables.append(
+                    TypedArg(
+                    gd.typedVariableList().getChild(i).getText()
+                    ))
+            variables = TypedArgList(variables)
         preds = []
         for p in gd.goalDesc():
             preds.append(parseGoalDescription(p))

@@ -5,7 +5,7 @@ from antlr4 import *
 from pythonpddl import pddlLexer
 from pythonpddl import pddlParser
 
-
+import copy
 import itertools
 import sys
 
@@ -36,7 +36,7 @@ class TypedArgList:
 #                last_type = arg.arg_type
 #            else:
 #                arg.arg_type = last_type
-   
+
     def asPDDL(self):
         return " ".join(map(lambda x: x.asPDDL(), self.args))
 
@@ -46,7 +46,7 @@ def parseTypeVariableList(tvl):
 
     arg_name = ""
     arg_type = "<NONE>"
-    
+
     for arg in tvl.singleTypeVarList():
         arg_type = arg.r_type().getText()
         for arg_context in arg.VARIABLE():
@@ -55,7 +55,7 @@ def parseTypeVariableList(tvl):
     for arg_context in tvl.VARIABLE():
         arg_name = arg_context.getText()
         args.append(TypedArg(arg_name))
-        
+
     return TypedArgList(args)
 
 
@@ -64,7 +64,7 @@ def parseTypeNameList(tnl):
 
     arg_name = ""
     arg_type = "<NONE>"
-    
+
     for arg in tnl.singleTypeNameList():
         arg_type = arg.r_type().getText()
         for arg_context in arg.name():
@@ -73,7 +73,7 @@ def parseTypeNameList(tnl):
     for arg_context in tnl.name():
         arg_name = arg_context.getText()
         args.append(TypedArg(arg_name))
-        
+
     return TypedArgList(args)
 
 class Function:
@@ -100,12 +100,18 @@ def parsePredicate(pred):
 
 class Formula:
     """ represented a goal description (atom / negated atom / and / or)"""
-    def __init__(self, subformulas, op = None, is_effect = False, is_numeric = False):
+    def __init__(self, subformulas, op = None,
+    is_effect = False, is_numeric = False,
+    is_condition=False, condition = None,
+    variables=None):
         self.subformulas = subformulas
         self.op = op
         self.is_effect = is_effect
         self.is_numeric = is_numeric
-   
+        self.is_condition = is_condition
+        self.condition = condition
+        self.variables = variables
+
     def get_predicates(self, positive):
         """ returns positive or negative predicates in this goal description"""
         if self.op is None and positive:
@@ -124,6 +130,10 @@ class Formula:
         return []
 
     def asPDDL(self):
+        if self.is_condition:
+            effect = copy.deepcopy(self)
+            effect.is_condition = False
+            return "(when {} {})".format(effect.asPDDL(), self.condition.asPDDL())
         if self.op is None:
             assert len(self.subformulas) == 1
             return self.subformulas[0].asPDDL()
@@ -133,7 +143,9 @@ class Formula:
         elif self.op in ["and",'>', '<', '=', '>=', '<=', 'increase', 'decrease', 'assign', 'scale-up', 'scale-down']:
             return "(" + self.op + " " + " ".join(map(lambda x: x.asPDDL(), self.subformulas)) + ")"
         elif self.op == "or":
-            raise Exception("Don't know how to handle disjunctive condition " + str(self.subformulas))
+            return "(or {} {})".format(self.subformulas[0].asPDDL(), self.subformulas[1].asPDDL())
+        elif self.op == "forall":
+            return "(forall ({}) {})".format(" ".join([arg.arg_name for arg in self.variables.args]), self.subformulas[0].asPDDL())
         else:
             raise Exception("Don't know how to handle op " + self.op)
 
@@ -154,6 +166,8 @@ def parseGoalDescription(gd, is_effect=False):
         if gd.getChildCount() > 1:
             # This hack is meant to take care of negative effects
             op = gd.getChild(1).getText()
+            if op == "forall":
+                raise NotImplementedError('haven\'t dealt with forall')
         return Formula([Predicate(name, TypedArgList(terms))], op, is_effect=is_effect)
     elif gd.fComp() is not None:
         op = gd.fComp().binaryComp().getText()
@@ -161,11 +175,20 @@ def parseGoalDescription(gd, is_effect=False):
         fexp2 = parseFExp(gd.fComp().fExp()[1])
         return Formula([fexp1, fexp2], op, is_effect=is_effect)
     else:
+        variables = None
         op = gd.getChild(1).getText()
+        if op == "forall":
+            variables = []
+            for i in range(gd.typedVariableList().getChildCount()):
+                variables.append(
+                    TypedArg(
+                    gd.typedVariableList().getChild(i).getText()
+                    ))
+            variables = TypedArgList(variables)
         preds = []
         for p in gd.goalDesc():
             preds.append(parseGoalDescription(p))
-        return Formula(preds, op, is_effect=is_effect)
+        return Formula(preds, op, is_effect=is_effect, variables=variables)
 
 class TimedFormula:
     """ represents a timed goal description"""
@@ -180,7 +203,7 @@ class TimedFormula:
             return "(at end " + self.formula.asPDDL() + ")"
         elif self.timespecifier == "all":
             return "(over all " + self.formula.asPDDL() + ")"
-        else:            
+        else:
             return "(at " + str(self.timespecifier) + " " + self.formula.asPDDL() + ")"
 
 def parseTimedGoalDescription(timedGD):
@@ -216,7 +239,13 @@ def parsePrefTimedGoalDescription(prefTimedGD):
 
 def parseCEffect(ceff):
     if ceff.condEffect() is not None:
-        raise Exception("Can't handle conditional effect " + ceff.getText())
+        condition = parseGoalDescription(ceff.goalDesc())
+        # parse the result of the conditional effect
+        effect = parsePEffect(ceff.condEffect().pEffect()[0])
+        effect.is_condition = True
+        effect.condition = condition
+        # raise Exception("Can't handle conditional effect " + ceff.getText())
+        return effect
     elif ceff.typedVariableList() is not None:
         raise Exception("Can't handle quantified effect " + ceff.getText())
     else:
@@ -228,9 +257,9 @@ def parsePEffect(peff):
         op = peff.assignOp().getText()
         head = parseFHead(peff.fHead())
         exp = parseFExp(peff.fExp())
-        return Formula([head, exp], op, is_effect=True, is_numeric=True)        
+        return Formula([head, exp], op, is_effect=True, is_numeric=True)
     else:
-        return parseGoalDescription(peff, is_effect=True)        
+        return parseGoalDescription(peff, is_effect=True)
 
 def parseTimedEffect(timedEffect):
     timespecifier = timedEffect.timeSpecifier().getText()
@@ -261,7 +290,7 @@ class Action:
         self.pre = pre                  #precondition formula
         self.eff = eff                  #list of effects
 
-    def get_pre(self, positive):        
+    def get_pre(self, positive):
         return self.pre.get_predicates(positive)
 
     def get_eff(self, positive):
@@ -269,7 +298,7 @@ class Action:
         for x in self.eff:
             l = l + x.get_predicates(positive)
         return l
-            
+
 
     def asPDDL(self):
         ret = ""
@@ -283,14 +312,14 @@ class Action:
 def parseAction(act):
     name = act.actionSymbol().getText()
     parameters = parseTypeVariableList(act.typedVariableList())
-    
+
     body = act.actionDefBody()
 
     action_cond = []
     pre = parseGoalDescription(body.precondition().goalDesc())
 
     effs = list(map(lambda x: parseCEffect(x), body.effect().cEffect()))
-            
+
     return Action(name, parameters, pre, effs)
 
 
@@ -317,7 +346,7 @@ class DurativeAction:
             if x.timespecifier == timespecifier:
                 l = l + x.formula.get_predicates(positive)
         return l
-            
+
 
     def asPDDL(self):
         ret = ""
@@ -364,17 +393,17 @@ class ConstantNumber:
 
     def __eq__(self, other):
         return isinstance(other, ConstantNumber) and self.val == other.val
-    
+
 class TotalTime:
     """ represents (total-time)"""
     def __init__(self):
         pass
-    
+
     def asPDDL(self):
         return "total-time"
 
     def __eq__(self, other):
-        return isinstance(other, TotalTime)    
+        return isinstance(other, TotalTime)
 
 def parseConstantNumber(number):
     return ConstantNumber(float(number.getText()))
@@ -384,7 +413,7 @@ class FExpression:
     """ represents a functional / numeric expression"""
     def __init__(self, op, subexps):
         self.op = op
-        self.subexps = subexps     
+        self.subexps = subexps
 
     def asPDDL(self):
         #if self.op == '-':
@@ -400,7 +429,7 @@ def parseFExp(fexp):
         return parseFHead(fexp.fHead())
     else:
         op = None
-        fexp1 = parseFExp(fexp.fExp())        
+        fexp1 = parseFExp(fexp.fExp())
         if fexp.binaryOp() is not None:
             op = fexp.binaryOp().getText()
             fexp2 = parseFExp(fexp.fExp2().fExp())
@@ -408,29 +437,29 @@ def parseFExp(fexp):
         else:
             op = "-"
             return FExpression(op, [fexp1])
-        return 
-    
+        return
+
 def parseMetricFExp(fexp):
     if fexp.NUMBER() is not None:
         return parseConstantNumber(fexp.NUMBER())
-    elif fexp.functionSymbol() is not None:             
-        return FHead(fexp.functionSymbol().name().getText(), TypedArgList(list(map(lambda x: TypedArg(x.NAME().getText()), fexp.name()))))         
+    elif fexp.functionSymbol() is not None:
+        return FHead(fexp.functionSymbol().name().getText(), TypedArgList(list(map(lambda x: TypedArg(x.NAME().getText()), fexp.name()))))
     elif fexp.getText() == 'total-time':
-        return TotalTime()    
+        return TotalTime()
     else:
         op = None
-        subexps = list(map(parseMetricFExp, fexp.metricFExp()))                    
+        subexps = list(map(parseMetricFExp, fexp.metricFExp()))
         if fexp.binaryOp() is not None:
             op = fexp.binaryOp().getText()
         else:
             assert fexp.getChildCount() > 1
             op = fexp.getChild(1).getText()
-        return FExpression(op, subexps)    
+        return FExpression(op, subexps)
 
 
 def parseSimpleDurationConstraint(sdc):
     op = sdc.durOp().getText()
-    
+
 
     if sdc.durValue().NUMBER() is not None:
         val = parseConstantNumber(sdc.durValue().NUMBER())
@@ -441,7 +470,7 @@ def parseSimpleDurationConstraint(sdc):
 def parseDurativeAction(da):
     name = da.actionSymbol().getText()
     parameters = parseTypeVariableList(da.typedVariableList())
-    
+
     body = da.daDefBody()
 
     duration = body.durationConstraint().simpleDurationConstraint()
@@ -467,8 +496,8 @@ def parseDurativeAction(da):
                 duration_ub = d2[1]
             else:
                 raise Exception("Can't parse duration " + duration.getText())
-    
-    
+
+
 
     action_cond = []
     cond = body.daGD()
@@ -481,7 +510,7 @@ def parseDurativeAction(da):
             action_cond.append(parsePrefTimedGoalDescription(x.prefTimedGD()))
 
     effs = parseDaEffect(body.daEffect())
-            
+
     return DurativeAction(name, parameters, duration_lb, duration_ub, action_cond, effs)
 
 
@@ -503,13 +532,13 @@ class Domain:
         ret = ret + "\t(:requirements " + " ".join(self.reqs) + ")\n"
         ret = ret + "\t(:types " + self.types.asPDDL() + ")\n"
         ret = ret + "\t(:constants " + self.constants.asPDDL() + ")\n"
-        
+
         if len(self.functions) > 0:
             ret = ret + "\t(:functions\n"
             for func in self.functions:
                 ret = ret + "\t\t" + func.asPDDL() + "\n"
             ret = ret + "\t)\n"
-        
+
         if len(self.predicates) > 0:
             ret = ret + "\t(:predicates\n"
             for pred in self.predicates:
@@ -517,16 +546,16 @@ class Domain:
             ret = ret + "\t)\n"
 
 
-        for a in self.actions:   
+        for a in self.actions:
             ret = ret + a.asPDDL() + "\n"
 
 
-        for da in self.durative_actions:   
+        for da in self.durative_actions:
             ret = ret + da.asPDDL() + "\n"
 
         ret = ret + ")"
         return ret
-        
+
 
 def parseDomain(domain):
     # Get name
@@ -574,19 +603,19 @@ def parseDomain(domain):
         #                   [parseTypeVariableList(action.derivedDef().typedVariableList()), parseGoalDescription(action.derivedDef().goalDesc())]
         #                   )
 
-    
+
     d = Domain(domainname, reqs, types, constants, predicates, functions, actions, durative_actions)
     return d
-        
+
 class Metric:
     """ represents a metric/optimization objective"""
     def __init__(self, objective, fexp):
         self.objective = objective
         self.fexp = fexp
-        
+
     def asPDDL(self):
         return "(:metric " + self.objective + " " + self.fexp.asPDDL() + ")"
-    
+
 class Problem:
     """ represents a PDDL problem"""
     def __init__(self, name, domainname, objects, initialstate, goal, metric=None):
@@ -611,7 +640,7 @@ class Problem:
             ret = ret + "\t" + self.metric.asPDDL() + "\n"
         ret = ret + ")"
         return ret
-        
+
 def parseNameLiteral(nameLiteral):
     name = nameLiteral.atomicNameFormula().predicate().name().getText()
     terms = []
@@ -622,12 +651,12 @@ def parseNameLiteral(nameLiteral):
         op = "not"
     return Formula([Predicate(name, TypedArgList(terms))], op)
 
-    
+
 def parseInitStateElement(initel):
     if initel.getChildCount() > 1 and initel.nameLiteral() and initel.getChild(1).getText() == 'at':
-        time = float(initel.NUMBER().getText())       
+        time = float(initel.NUMBER().getText())
         return TimedFormula(time, parseNameLiteral(initel.nameLiteral()))
-    elif initel.nameLiteral() is not None: 
+    elif initel.nameLiteral() is not None:
         return parseNameLiteral(initel.nameLiteral())
     elif initel.fHead() is not None:
         fhead = parseFHead(initel.fHead())
@@ -650,8 +679,8 @@ def parseProblem(problem):
         init.append(parseInitStateElement(initel))
 
     goal = parseGoalDescription(problem.goal().goalDesc())
-        
-    
+
+
     metric = None
     if problem.metricSpec() is not None:
         met = problem.metricSpec()
@@ -688,4 +717,3 @@ def parseDomainAndProblem(domainfile, problemfile):
 
 
     return (dom, prob)
-

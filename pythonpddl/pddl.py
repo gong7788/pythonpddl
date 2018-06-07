@@ -144,8 +144,8 @@ class Formula:
             return "(" + self.op + " " + " ".join(map(lambda x: x.asPDDL(), self.subformulas)) + ")"
         elif self.op == "or":
             return "(or {} {})".format(self.subformulas[0].asPDDL(), self.subformulas[1].asPDDL())
-        elif self.op == "forall":
-            return "(forall ({}) {})".format(" ".join([arg.arg_name for arg in self.variables.args]), self.subformulas[0].asPDDL())
+        elif self.op == "forall" or self.op == 'exists':
+            return "({} ({}) {})".format(self.op, " ".join([arg.arg_name for arg in self.variables.args]), self.subformulas[0].asPDDL())
         else:
             raise Exception("Don't know how to handle op " + self.op)
 

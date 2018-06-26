@@ -177,7 +177,7 @@ def parseGoalDescription(gd, is_effect=False):
     else:
         variables = None
         op = gd.getChild(1).getText()
-        if op == "forall":
+        if op == "forall" or op == "exists":
             variables = []
             for i in range(gd.typedVariableList().getChildCount()):
                 variables.append(

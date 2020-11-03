@@ -133,7 +133,7 @@ class Formula:
         if self.is_condition:
             effect = copy.deepcopy(self)
             effect.is_condition = False
-            return "(when {} {})".format(effect.asPDDL(), self.condition.asPDDL())
+            return f"(when {self.condition.asPDDL()} {effect.asPDDL()})"
         if self.op is None:
             assert len(self.subformulas) == 1
             return self.subformulas[0].asPDDL()
@@ -386,7 +386,7 @@ def parseFHead(fhead):
 class ConstantNumber:
     """ represents a constant number"""
     def __init__(self, val):
-        self.val = val
+        self.val = int(val)
 
     def asPDDL(self):
         return str(self.val)
